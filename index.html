@@ -1,0 +1,59 @@
+<html>
+<head>
+    <title>frame test</title>
+</head>
+<body>
+
+<!-- <canvas id="frame_canvas" style="width: 1872; height: 1404; border: black solid 1px;"></canvas> -->
+<image id="frame_image" style="border: black solid 1px;"></image>
+
+<script>
+let ws = new WebSocket(`ws://${window.location.hostname}:%WS_PORT%`);
+let is_ws_setup = false;
+let frame_size = {w: 0, h: 0};
+<!--ws.binaryType = "arraybuffer";-->
+function onWebsocketMsg(event) {
+    console.log("%O got message %O", this, event);
+    if (!is_ws_setup && event.data.startsWith("SETUP")) {
+        let [type, ...args] = event.data.split("|");
+        switch (type) {
+            case "SETUP":
+                let [width, height] = args;
+                frame_size.w = width;
+                frame_size.h = height;
+                is_ws_setup = true;
+                return;
+        }
+    }
+    var byteArray = new Uint8Array(event.data);
+    let byte_count = frame_size.w * frame_size.h;
+
+    let imageTag = document.getElementById("frame_image");
+    for (let i=0; i<byteArray.length; i+=byte_count) {
+        let end = i+byte_count;
+        let subset = byteArray.slice(i, end);
+
+        let blobUrl = URL.createObjectURL(subset);
+        console.log("Blob url is %O", blobUrl);
+        imageTag.src = blobUrl;
+    }
+
+    if ( event.data instanceof ArrayBuffer ) {
+        /*
+        let canvas = document.getElementById("frame_canvas");
+        var context = canvas.getContext('2d');
+        var imgData = context.createImageData(parseInt(canvas.style.width, 10), parseInt(canvas.style.height, 10));
+        for ( var i = 0; i < byteArray.length; i++ ) {
+            imgData.data[i] = byteArray[i];
+        }
+        context.putImageData( imgData, 0, 0 );
+        */
+    }
+}
+ws.onmessage = onWebsocketMsg.bind(ws);
+
+ws.onopen = event => ws.send("test");
+</script>
+
+</body>
+</html>
