@@ -184,8 +184,6 @@ function onWebsocketMsg(event) {
         for (let i = 0; i < byteArray.byteLength; i++) 
             data.push(byteArray[i]);
 
-        console.log("Data md5: %O", CryptoJS.MD5(data).toString())
-
         let canvas = document.getElementById("frame_canvas");
         let context = canvas.getContext("2d");
 
