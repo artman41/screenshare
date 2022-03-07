@@ -1,33 +1,35 @@
-//mod web;
-mod remarkable;
-
-use std::borrow::{Borrow};
-use std::future::Future;
-use crate::remarkable::{Frame, Remarkable};
-use clap::Parser;
-use anyhow::{Result};
-use std::io::{Write};
-use std::net::{TcpListener};
-use std::ops::Deref;
-use std::sync::Arc;
-use std::sync::mpsc::{channel, Sender};
-use futures::lock::Mutex;
+use std::sync::{Arc, RwLock};
 use std::thread;
-use std::thread::{Builder, JoinHandle, sleep};
-use std::time::{Duration, Instant};
-use futures::executor::block_on;
+
+use anyhow::Result;
+use clap::Parser;
+
+use crate::remarkable::{Frame, Remarkable};
+
+mod remarkable;
+mod watch_fb;
+mod endpoint;
+mod imager;
 
 #[derive(Parser)]
 #[clap(author, version, about)]
 pub struct Opts {
     #[clap(
         long,
-        name = "port",
-        short = 'l',
-        help = "Listen for an (unsecure) TCP connection to send the data to which reduces some load on the reMarkable and improves fps.",
-        default_value = "16982"
+        name = "http_port",
+        short = 'p',
+        help = "Listen for HTTP connection.",
+        default_value = "9090"
     )]
-    listen: usize,
+    http_port: usize,
+    #[clap(
+        long,
+        name = "websocket_port",
+        short = 'w',
+        help = "Listen for WS connection.",
+        default_value = "9091"
+    )]
+    websocket_port: usize,
     #[clap(
         long,
         name = "refresh",
@@ -36,123 +38,36 @@ pub struct Opts {
         default_value = "60"
     )]
     refresh_rate: usize,
+    #[clap(
+        long,
+        name = "debug",
+        short = 'd',
+        help = "Writes each frame to a file",
+        parse(try_from_str),
+        default_value = "false"
+    )]
+    debug: bool,
 }
 
-//#[actix_rt::main]
 fn main() -> Result<()> {
-    return block_on(do_thing());
-}
-
-async fn do_thing() -> Result<()> {
-    let writer_set: Arc<Mutex<Vec<Sender<Frame>>>> = Arc::new(Mutex::new(vec!()));
-    eprintln!("Created writer set");
-    //env::set_var("RUST_LOG", "actix_web=debug,actix_server=info");
-    //env_logger::init();
-
-    //ffmpeg::init()?;
+    let frame: Arc<RwLock<Frame>> = Arc::new(RwLock::default());
 
     let opts: Opts = Opts::parse();
+    let time_per_frame = 1u128/(opts.refresh_rate as u128);
 
-    let writer_set_clone = writer_set.clone();
-    thread::spawn(move || {
-        eprintln!("Getting remarkable");
-        let mut remarkable = Remarkable::new().unwrap();
-        eprintln!("Got remarkable!");
-        let mut start = Instant::now();
-        let mut read_count = 0;
-        loop {
-            // eprintln!("Getting frames");
-            let frame =
-                match remarkable.read_frame() {
-                    Ok(frame) => frame,
-                    Err(_) => continue,
-                };
-            let frame_ptr = frame.borrow();
-            {
-                // eprintln!("[READER] Locking writer set!");
-                let mut writer_set_locked = block_on(writer_set_clone.lock());
-                // eprintln!("[READER] Iterating over writer set!");
-                writer_set_locked.retain(|tx: &Sender<Frame>|
-                    match tx.send(frame_ptr.deref().clone()) {
-                        Ok(_) => true,
-                        Err(err) => {
-                            eprintln!("Got error {}", err);
-                            false
-                        }
-                    })
-            }
-            let now = Instant::now();
-            let diff = now.duration_since(start);
-            let diff_millis = diff.as_millis();
-            if diff_millis >= 1000 {
-                read_count = 0;
-                start = now;
-            } else {
-                read_count += 1;
-                if read_count >= opts.refresh_rate {
-                    if diff_millis < 1000 {
-                        read_count = 0;
-                        eprintln!("sleeping for {}ms", diff_millis);
-                        sleep(Duration::from_millis((1000 - diff_millis) as u64));
-                        start = Instant::now();
-                    }
-                }
-            }
-        }
-    });
+    let frame_c = frame.clone();
+    thread::spawn(move || watch_fb::run(frame_c, time_per_frame));
 
-    let writer_set_ptr = writer_set.clone();
-    let listener = TcpListener::bind("0.0.0.0:9000")?;
-    'outer: loop {
-        eprintln!("Accepting client");
-        match listener.accept() {
-            Ok((mut stream, _addr)) => {
-                eprintln!("Accepted client");
-                let (tx, rx) = channel::<Frame>();
+    let frame_c = frame.clone();
+    thread::spawn(move || endpoint::run_websocket(frame_c, &format!("0.0.0.0:{}", opts.websocket_port)));
+    thread::spawn(move || endpoint::run_http(&format!("0.0.0.0:{}", opts.http_port), opts.websocket_port));
 
-                eprintln!("Putting Sender into writer_set");
-                {
-                    eprintln!("[CLIENT] Locking writer set!");
-                    let mut writer_set_locked = writer_set_ptr.lock().await;
-                    eprintln!("[CLIENT] Adding Sender to writer set!");
-                    writer_set_locked.push(tx.clone());
-                }
-                eprintln!("Put!");
-                'inner: loop {
-                    let frame =
-                        match rx.recv() {
-                            Ok(frame) => frame,
-                            Err(_) => continue
-                        };
-                    eprintln!("Client got frame!");
-                    match stream.write(frame.pixels.as_slice()) {
-                        Ok(_) => (),
-                        Err(_) => break 'inner,
-                    }
-                    eprintln!("Wrote frame to client stream!");
-                };
-                eprintln!("Client disconnected, dropping Receiver!");
-                drop(rx)
-            },
-            Err(_) => continue 'outer,
-        }
+    if opts.debug {
+        let frame_c = frame.clone();
+        thread::spawn(move || imager::run(frame_c));
     }
 
-    // let (tx, rx) = channel();
-
-    // thread::spawn(move || {
-    //     streamer.
-    // });
-
-    // HttpServer::new(|| {
-    //     App::new()
-    //         // enable logger - always register actix-web Logger middleware last
-    //         .wrap(middleware::Logger::default())
-    //         // register HTTP requests handlers
-    //         .service(actix_web::web::resource("/").to(web::serve))
-    //         .service(actix_web::web::resource("/ws").to(web::websocket))
-    // })
-    // .bind(format!("0.0.0.0:{}", opts.listen?))?
-    // .run()
-    // .await
+    loop {
+        thread::park()
+    }
 }

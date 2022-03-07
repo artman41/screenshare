@@ -4,36 +4,208 @@
 </head>
 <body>
 
-<!-- <canvas id="frame_canvas" style="width: 1872; height: 1404; border: black solid 1px;"></canvas> -->
-<image id="frame_image" style="border: black solid 1px;"></image>
+<canvas id="frame_canvas" width="1404" height="1872" style="border: black solid 1px;"></canvas>
 
 <script>
-let ws = new WebSocket("ws://127.0.0.1:9001");
-<!--ws.binaryType = "arraybuffer";-->
+if (typeof FileReader === "undefined") {
+    alert("Your browser do not support HTML5 FileReader class. Plese use Firefox or Chrome.");
+}
+
+let ws = new WebSocket(`ws://192.168.0.246:%WS_PORT%`);
+ws.binaryType = "arraybuffer";
+
+function getBit(dataIn, pos, le) {
+    posByte = pos >> 3;
+    if (le)
+        posByte = posByte ^ 1;
+    posBit = 0x80 >> (pos % 8);
+    return (dataIn[posByte] & posBit) != 0;
+}
+
+function getBits(dataIn, start, count, le) {
+    var ret = 0;
+    for (var i = 0; i < count; i++) {
+        ret <<= 1;
+        var bit = getBit(dataIn, start + i, le);
+        if (bit) ret |= 1;
+    }
+    return ret;
+}
+
+function to8bit(x, bpp) {
+    if (!bpp) return -1;
+    if (bpp > 8)
+        x = x >> (bpp - 8); // FIXME dithering
+    if (bpp < 8) {
+        x = x << (8 - bpp); // FIXME calculate scale
+        x |= (x & 0xff) >> bpp;
+    }
+    return x;
+}
+
+function getPackedEx(dataIn, xres, yres, format, torgba) {
+    var ret = [];
+    var bpp = format.bpsp1 + format.bpsp2 + format.bpsp3 + format.bpsp4;
+    for (var i = 0; i < (xres * yres * bpp); i += bpp) {
+        var a = getBits(dataIn, i, format.bpsp1, format.le);
+        var b = getBits(dataIn, i + format.bpsp1, format.bpsp2, format.le);
+        var c = getBits(dataIn, i + format.bpsp1 + format.bpsp2, format.bpsp3, format.le);
+        var d = getBits(dataIn, i + format.bpsp1 + format.bpsp2 + format.bpsp3, format.bpsp4, format.le);
+        a = to8bit(a, format.bpsp1);
+        b = to8bit(b, format.bpsp2);
+        c = to8bit(c, format.bpsp3);
+        d = to8bit(d, format.bpsp4);
+
+        ret.push(torgba(a, b, c, d));
+    }
+    return ret;
+}
+
+// RGB
+function rgba2rgba(r, g, b, a) {
+	if(format.alphaFirst) {
+		var tmp = a;
+		a = r;
+		r = g;
+		g = b;
+		b = tmp;
+
+	}
+	if(format.ignoreAlpha)
+		a = 0xff;
+	if(r<0) r = 0;
+	if(g<0) g = 0;
+	if(b<0) b = 0;
+	return (a << 24 | r | g << 8 | b << 16);
+}
+// grayscale
+function gray2rgba(y, foo1, foo2, a) {
+	var r = y, g = y , b = y;
+	if(format.alphaFirst) {
+		g = a;
+		b = a;
+	}
+	return rgba2rgba(r, g, b, a);
+}
+
+function getPixels(dataIn, xres, yres, format) {
+    return format.getPixels(dataIn, xres, yres, format, format.toRgba);
+}
+
+function populateImageData(imageData, data) {
+    let xres = imageData.width, yres = imageData.height;
+    let pixels = getPixels(data, xres, yres, format);
+
+    if (window.fliph !== undefined && window.fliph) {
+        for (var y = 0; y < yres; y++) {
+            var start = y * xres + 0;
+            var stop = (y + 1) * xres - 1;
+            while (start < stop) {
+                var tmp = pixels[start];
+                pixels[start] = pixels[stop];
+                pixels[stop] = tmp;
+                stop--;
+                start++;
+            }
+        }
+    }
+    if (window.flipv !== undefined && window.flipv) {
+        for (var x = 0; x < xres; x++) {
+            var start = x;
+            var stop = xres * yres + x - xres;
+            while (start < stop) {
+                var tmp = pixels[start];
+                pixels[start] = pixels[stop];
+                pixels[stop] = tmp;
+                stop -= xres;
+                start += xres;
+            }
+        }
+    }
+    if (window.invertcol !== undefined && window.invertcol) {
+        var p = xres * yres;
+        while (p--) {
+            pixels[p] = ~pixels[p] | 0xff000000;
+        }
+    }
+
+    if (window.zoom === undefined || window.zoom < 2) {
+        var p = xres * yres;
+        var pix = p * 4,
+            pix1 = pix + 1,
+            pix2 = pix + 2,
+            pix3 = pix + 3;
+
+        while (p--) {
+            imageData.data[pix3 -= 4] = (pixels[p] >> 24) & 0xff;
+            imageData.data[pix2 -= 4] = (pixels[p] >> 16) & 0xff;
+            imageData.data[pix1 -= 4] = (pixels[p] >> 8) & 0xff;
+            imageData.data[pix -= 4] = (pixels[p]) & 0xff;
+        }
+    } else {
+        for (var x = 0; x < xres; x++)
+            for (var y = 0; y < yres; y++) {
+                var pixel = pixels[x + xres * y];
+                for (var k = 0; k < zoom; k++)
+                    for (var j = 0; j < zoom; j++) {
+                        var pos = (((x * zoom) + j) + ((y * zoom) + k) * xres * zoom) * 4;
+                        imageData.data[pos + 3] = (pixel >> 24) & 0xff;
+                        imageData.data[pos + 2] = (pixel >> 16) & 0xff;
+                        imageData.data[pos + 1] = (pixel >> 8) & 0xff;
+                        imageData.data[pos + 0] = (pixel) & 0xff;
+                    }
+            }
+    }
+}
+
+
+let format = {
+    "bpsp1": 8,
+    "bpsp2": 0,
+    "bpsp3": 0,
+    "bpsp4": 0,
+    "align": 1,
+    "subsh": 1,
+    "subsv": 1,
+    "le": false,
+    "ignoreAlpha": false,
+    "alphaFirst": false,
+    getPixels: getPackedEx,
+    toRgba: gray2rgba,
+}
+
 function onWebsocketMsg(event) {
     console.log("%O got message %O", this, event);
-    let blobUrl = URL.createObjectURL(event.data);
-    console.log("Blob url is %O", blobUrl);
-    let imageTag = document.getElementById("frame_image");
-    imageTag.src = blobUrl;
-    imageTag.onload = function() { context.drawImage(image, 0, 0); };
 
     if ( event.data instanceof ArrayBuffer ) {
-        /*
-        var byteArray = new Uint8Array( event.data );
+        let byteArray = new Uint8Array(event.data);
+        console.log("data is %O", byteArray);
+        let data = [];
+        for (let i = 0; i < byteArray.byteLength; i++) 
+            data.push(byteArray[i]);
+
+        console.log("Data md5: %O", CryptoJS.MD5(data).toString())
+
         let canvas = document.getElementById("frame_canvas");
-        var context = canvas.getContext('2d');
-        var imgData = context.createImageData(parseInt(canvas.style.width, 10), parseInt(canvas.style.height, 10));
-        for ( var i = 0; i < byteArray.length; i++ ) {
-            imgData.data[i] = byteArray[i];
-        }
-        context.putImageData( imgData, 0, 0 );
-        */
+        let context = canvas.getContext("2d");
+
+        let tmpCanvas = document.createElement("canvas");
+        tmpCanvas.width = canvas.height;
+        tmpCanvas.height = canvas.width;
+        let tmpContext = tmpCanvas.getContext("2d");
+        let imageData = tmpContext.createImageData(tmpCanvas.width, tmpCanvas.height);
+        populateImageData(imageData, data);
+        tmpContext.putImageData(imageData, 0, 0);
+
+        context.clearRect(0,0,canvas.width,canvas.height);
+        context.save();
+        context.translate(canvas.width/2,canvas.height/2);
+        context.rotate(-Math.PI/2);
+        context.drawImage(tmpCanvas, -tmpCanvas.width/2, -tmpCanvas.height/2)
+        context.restore();
     }
 }
 ws.onmessage = onWebsocketMsg.bind(ws);
-
-ws.onopen = event => ws.send("test");
 </script>
 
 </body>

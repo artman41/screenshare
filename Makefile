@@ -1,8 +1,10 @@
-include remarkable.mk
+ROOT_DIR := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
+
+include $(ROOT_DIR)/remarkable.mk
 
 TARGET := unix
 
-DEPS = gcc-multilib llvm
+DEPS = gcc-multilib llvm clang-11
 noop=
 space = $(noop) $(noop)
 
