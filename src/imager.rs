@@ -35,27 +35,9 @@ pub(crate) fn run(frame_arc: Arc<RwLock<Frame>>) {
 
         frame = new_frame;
 
-        let byte_count = 50;
-
-        let first: Vec<u8> =
-            frame.pixels.iter()
-                .take(byte_count)
-                .map(|&n|n)
-                .collect();
-
-        let end: Vec<u8> =
-            frame.pixels.iter()
-                .rev()
-                .take(byte_count)
-                .map(|&n|n)
-                .collect::<Vec<u8>>()
-                .into_iter()
-                .rev()
-                .collect();
-
-        eprintln!("Got frame {}x{}\nfirst {} bytes: {:?}\nlast {} bytes: {:?}", &frame.width, &frame.height, byte_count, first, byte_count, end);
-
         let file_name = &format!("{}.bytes", SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs());
+
+        eprintln!("Got frame {}x{}, writing to {}", &frame.width, &frame.height, &file_name);
         let mut output_file = File::create(file_name).expect("Couldn't open output file");
         let _ = output_file.write_all((&frame).pixels.as_slice());
         drop(output_file);
